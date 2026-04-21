@@ -1,45 +1,89 @@
-import { NextRequest, NextResponse } from "next/server";
-import { listState, upsertState } from "@/lib/data-store";
-import { upsertStateInputSchema } from "@/lib/db/schema";
-import { requestHasPaidAccess, unauthorizedPaywallResponse } from "@/lib/auth";
+import { NextResponse } from "next/server";
+import {
+  AgentSchema,
+  parseCollection,
+  StateRecordSchema,
+  StateUpsertSchema
+} from "@/lib/db/schema";
+import { requirePaidAccess } from "@/lib/auth";
+import { readJsonFile, writeJsonFile } from "@/lib/storage";
 
-export const runtime = "nodejs";
+const STATE_FILE = "state.json";
+const AGENTS_FILE = "agents.json";
 
-export async function GET(request: NextRequest) {
-  if (!requestHasPaidAccess(request)) {
-    return unauthorizedPaywallResponse();
+export async function GET(req: Request) {
+  const auth = await requirePaidAccess();
+  if (!auth.ok) {
+    return auth.response;
   }
 
-  const { searchParams } = new URL(request.url);
+  const { searchParams } = new URL(req.url);
   const agentId = searchParams.get("agentId");
-  const key = searchParams.get("key") ?? undefined;
 
   if (!agentId) {
-    return NextResponse.json(
-      { error: "invalid_request", message: "agentId is required" },
-      { status: 400 }
-    );
+    return NextResponse.json({ error: "agentId is required." }, { status: 400 });
   }
 
-  const records = await listState(agentId, key);
-  return NextResponse.json(records);
+  const raw = await readJsonFile<unknown[]>(STATE_FILE, []);
+  const state = parseCollection(raw, StateRecordSchema)
+    .filter((record) => record.ownerEmail === auth.email && record.agentId === agentId)
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+
+  return NextResponse.json({ state });
 }
 
-export async function POST(request: NextRequest) {
-  if (!requestHasPaidAccess(request)) {
-    return unauthorizedPaywallResponse();
+export async function POST(req: Request) {
+  const auth = await requirePaidAccess();
+  if (!auth.ok) {
+    return auth.response;
   }
 
-  const json = await request.json();
-  const parsed = upsertStateInputSchema.safeParse(json);
+  const body = await req.json();
+  const parsed = StateUpsertSchema.safeParse(body);
 
   if (!parsed.success) {
-    return NextResponse.json(
-      { error: "invalid_request", details: parsed.error.flatten() },
-      { status: 400 }
-    );
+    return NextResponse.json({ error: "Invalid state payload." }, { status: 400 });
   }
 
-  const state = await upsertState(parsed.data);
-  return NextResponse.json(state, { status: 201 });
+  const agentsRaw = await readJsonFile<unknown[]>(AGENTS_FILE, []);
+  const agents = parseCollection(agentsRaw, AgentSchema);
+
+  const ownsAgent = agents.some(
+    (agent) => agent.id === parsed.data.agentId && agent.ownerEmail === auth.email
+  );
+
+  if (!ownsAgent) {
+    return NextResponse.json({ error: "Agent not found." }, { status: 404 });
+  }
+
+  const now = new Date().toISOString();
+  const raw = await readJsonFile<unknown[]>(STATE_FILE, []);
+  const current = parseCollection(raw, StateRecordSchema);
+
+  const idx = current.findIndex(
+    (entry) =>
+      entry.ownerEmail === auth.email &&
+      entry.agentId === parsed.data.agentId &&
+      entry.key === parsed.data.key
+  );
+
+  const stateRecord = StateRecordSchema.parse({
+    id: idx >= 0 ? current[idx].id : crypto.randomUUID(),
+    ownerEmail: auth.email,
+    agentId: parsed.data.agentId,
+    key: parsed.data.key,
+    value: parsed.data.value,
+    version: idx >= 0 ? current[idx].version + 1 : 1,
+    updatedAt: now
+  });
+
+  if (idx >= 0) {
+    current[idx] = stateRecord;
+  } else {
+    current.unshift(stateRecord);
+  }
+
+  await writeJsonFile(STATE_FILE, current);
+
+  return NextResponse.json({ state: stateRecord }, { status: idx >= 0 ? 200 : 201 });
 }

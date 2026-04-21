@@ -1,47 +1,37 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { lemonSqueezySetup } from "@lemonsqueezy/lemonsqueezy.js";
 
-export type LemonWebhookPayload = {
-  meta?: {
-    event_name?: string;
-    custom_data?: Record<string, unknown>;
-  };
-  data?: {
-    id?: string;
-    attributes?: {
-      identifier?: string;
-      user_email?: string;
-      email?: string;
-      status?: string;
-      total?: number;
-    };
-  };
-};
+let initialized = false;
 
-export function getCheckoutUrl() {
-  const productId = process.env.NEXT_PUBLIC_LEMON_SQUEEZY_PRODUCT_ID;
-  const storeId = process.env.NEXT_PUBLIC_LEMON_SQUEEZY_STORE_ID;
-
-  if (!productId || !storeId) {
-    return null;
+export function initLemonSqueezy() {
+  if (initialized) {
+    return;
   }
 
-  return `https://${storeId}.lemonsqueezy.com/buy/${productId}?embed=1&checkout[dark]=true`;
+  if (process.env.LEMONSQUEEZY_API_KEY) {
+    lemonSqueezySetup({ apiKey: process.env.LEMONSQUEEZY_API_KEY });
+  }
+
+  initialized = true;
 }
 
-export function verifyLemonSignature(rawBody: string, signatureHeader: string | null): boolean {
-  const secret = process.env.LEMON_SQUEEZY_WEBHOOK_SECRET;
+export function normalizeLegacyWebhook(payload: Record<string, unknown>) {
+  const maybeEmail =
+    typeof payload?.meta === "object" && payload.meta && "custom_data" in payload.meta
+      ? payload.meta
+      : null;
 
-  if (!secret || !signatureHeader) {
-    return false;
-  }
-
-  const digest = createHmac("sha256", secret).update(rawBody).digest("hex");
-  const expected = Buffer.from(digest);
-  const received = Buffer.from(signatureHeader);
-
-  if (expected.length !== received.length) {
-    return false;
-  }
-
-  return timingSafeEqual(expected, received);
+  return {
+    source: "lemonsqueezy",
+    email:
+      typeof payload.data === "object" &&
+      payload.data &&
+      "attributes" in payload.data &&
+      typeof payload.data.attributes === "object" &&
+      payload.data.attributes &&
+      "user_email" in payload.data.attributes
+        ? String((payload.data.attributes as Record<string, unknown>).user_email)
+        : typeof maybeEmail === "object" && maybeEmail && "email" in maybeEmail
+          ? String((maybeEmail as Record<string, unknown>).email)
+          : null
+  };
 }

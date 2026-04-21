@@ -1,134 +1,146 @@
 import { z } from "zod";
 
-export const agentStatusSchema = z.enum(["healthy", "degraded", "offline"]);
+export const AgentStatusSchema = z.enum(["active", "paused", "error"]);
 
-export const agentSchema = z.object({
-  id: z.string().min(1),
-  name: z.string().min(2).max(120),
-  role: z.string().min(2).max(180),
-  status: agentStatusSchema,
-  requests24h: z.number().int().nonnegative(),
-  errorRate: z.number().min(0).max(1),
-  avgLatencyMs: z.number().nonnegative(),
-  createdAt: z.string().datetime(),
-  updatedAt: z.string().datetime()
+export const AgentSchema = z.object({
+  id: z.string(),
+  ownerEmail: z.string().email(),
+  name: z.string().min(2).max(64),
+  description: z.string().min(20).max(320),
+  model: z.string().min(2).max(80),
+  status: AgentStatusSchema,
+  messageCount: z.number().int().nonnegative(),
+  successRate: z.number().min(0).max(1),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  lastSeenAt: z.string().nullable()
 });
 
-export const createAgentInputSchema = z.object({
-  name: z.string().min(2).max(120),
-  role: z.string().min(2).max(180)
+export const AgentCreateSchema = z.object({
+  name: z.string().min(2).max(64),
+  description: z.string().min(20).max(320),
+  model: z.string().min(2).max(80)
 });
 
-export const memoryRecordSchema = z.object({
-  id: z.string().min(1),
+export const MemoryRecordSchema = z.object({
+  id: z.string(),
+  ownerEmail: z.string().email(),
+  agentId: z.string(),
+  namespace: z.string().min(1).max(64),
+  key: z.string().min(1).max(120),
+  value: z.unknown(),
+  metadata: z.record(z.string(), z.unknown()).default({}),
+  createdAt: z.string(),
+  updatedAt: z.string()
+});
+
+export const MemoryWriteSchema = z.object({
   agentId: z.string().min(1),
-  namespace: z.string().min(1).max(80),
-  content: z.string().min(1).max(5000),
-  tags: z.array(z.string().min(1).max(40)).max(10),
-  createdAt: z.string().datetime()
+  namespace: z.string().min(1).max(64).default("default"),
+  key: z.string().min(1).max(120),
+  value: z.unknown(),
+  metadata: z.record(z.string(), z.unknown()).optional()
 });
 
-export const createMemoryInputSchema = z.object({
-  agentId: z.string().min(1),
-  namespace: z.string().min(1).max(80),
-  content: z.string().min(1).max(5000),
-  tags: z.array(z.string().min(1).max(40)).max(10).default([])
-});
+export const TaskStatusSchema = z.enum(["queued", "running", "completed", "failed"]);
 
-export const taskStatusSchema = z.enum(["queued", "running", "completed", "failed"]);
-
-export const taskSchema = z.object({
-  id: z.string().min(1),
-  agentId: z.string().min(1),
-  title: z.string().min(2).max(180),
-  payload: z.record(z.unknown()),
-  priority: z.enum(["low", "normal", "high"]),
-  status: taskStatusSchema,
+export const TaskRecordSchema = z.object({
+  id: z.string(),
+  ownerEmail: z.string().email(),
+  agentId: z.string(),
+  type: z.string().min(1).max(80),
+  payload: z.record(z.string(), z.unknown()),
+  status: TaskStatusSchema,
+  priority: z.number().int().min(1).max(5),
   attempts: z.number().int().nonnegative(),
-  runAt: z.string().datetime(),
-  createdAt: z.string().datetime(),
-  updatedAt: z.string().datetime()
+  maxAttempts: z.number().int().min(1).max(10),
+  result: z.unknown().nullable(),
+  error: z.string().nullable(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  startedAt: z.string().nullable(),
+  completedAt: z.string().nullable()
 });
 
-export const createTaskInputSchema = z.object({
+export const TaskCreateSchema = z.object({
   agentId: z.string().min(1),
-  title: z.string().min(2).max(180),
-  payload: z.record(z.unknown()).default({}),
-  priority: z.enum(["low", "normal", "high"]).default("normal"),
-  runAt: z.string().datetime().optional()
+  type: z.string().min(1).max(80),
+  payload: z.record(z.string(), z.unknown()),
+  priority: z.number().int().min(1).max(5).default(3),
+  maxAttempts: z.number().int().min(1).max(10).default(3)
 });
 
-export const updateTaskStatusInputSchema = z.object({
-  id: z.string().min(1),
-  status: taskStatusSchema,
-  attempts: z.number().int().nonnegative().optional()
+export const TaskUpdateSchema = z.object({
+  taskId: z.string().min(1),
+  status: TaskStatusSchema,
+  error: z.string().optional(),
+  result: z.unknown().optional()
 });
 
-export const stateRecordSchema = z.object({
-  id: z.string().min(1),
+export const StateRecordSchema = z.object({
+  id: z.string(),
+  ownerEmail: z.string().email(),
+  agentId: z.string(),
+  key: z.string().min(1).max(120),
+  value: z.unknown(),
+  version: z.number().int().min(1),
+  updatedAt: z.string()
+});
+
+export const StateUpsertSchema = z.object({
   agentId: z.string().min(1),
   key: z.string().min(1).max(120),
-  value: z.record(z.unknown()),
-  updatedAt: z.string().datetime()
+  value: z.unknown()
 });
 
-export const upsertStateInputSchema = z.object({
-  agentId: z.string().min(1),
-  key: z.string().min(1).max(120),
-  value: z.record(z.unknown())
+export const CommunicationRecordSchema = z.object({
+  id: z.string(),
+  ownerEmail: z.string().email(),
+  fromAgentId: z.string(),
+  toAgentId: z.string(),
+  channel: z.string().min(1).max(80),
+  message: z.string().min(1).max(4000),
+  status: z.enum(["queued", "delivered"]),
+  createdAt: z.string(),
+  deliveredAt: z.string().nullable()
 });
 
-export const messageStatusSchema = z.enum(["sent", "acknowledged"]);
-
-export const messageSchema = z.object({
-  id: z.string().min(1),
+export const CommunicationCreateSchema = z.object({
   fromAgentId: z.string().min(1),
   toAgentId: z.string().min(1),
-  topic: z.string().min(2).max(140),
-  payload: z.record(z.unknown()),
-  status: messageStatusSchema,
-  createdAt: z.string().datetime(),
-  acknowledgedAt: z.string().datetime().optional()
+  channel: z.string().min(1).max(80).default("coordination"),
+  message: z.string().min(1).max(4000)
 });
 
-export const createMessageInputSchema = z.object({
-  fromAgentId: z.string().min(1),
-  toAgentId: z.string().min(1),
-  topic: z.string().min(2).max(140),
-  payload: z.record(z.unknown()).default({})
+export const PurchaseRecordSchema = z.object({
+  id: z.string(),
+  email: z.string().email(),
+  source: z.enum(["stripe", "lemonsqueezy"]),
+  amount: z.number().nullable(),
+  currency: z.string().nullable(),
+  createdAt: z.string()
 });
 
-export const acknowledgeMessageInputSchema = z.object({
-  id: z.string().min(1)
+export const AccessUnlockSchema = z.object({
+  email: z.string().email()
 });
 
-export const purchaseRecordSchema = z.object({
-  id: z.string().min(1),
-  orderId: z.string().min(1),
-  email: z.string().email().optional(),
-  createdAt: z.string().datetime()
-});
+export function parseCollection<T>(raw: unknown[], schema: z.ZodType<T>): T[] {
+  const records: T[] = [];
 
-export const dbSchema = z.object({
-  agents: z.array(agentSchema),
-  memories: z.array(memoryRecordSchema),
-  tasks: z.array(taskSchema),
-  state: z.array(stateRecordSchema),
-  messages: z.array(messageSchema),
-  purchases: z.array(purchaseRecordSchema)
-});
+  for (const entry of raw) {
+    const parsed = schema.safeParse(entry);
+    if (parsed.success) {
+      records.push(parsed.data);
+    }
+  }
 
-export type AgentRecord = z.infer<typeof agentSchema>;
-export type CreateAgentInput = z.infer<typeof createAgentInputSchema>;
-export type MemoryRecord = z.infer<typeof memoryRecordSchema>;
-export type CreateMemoryInput = z.infer<typeof createMemoryInputSchema>;
-export type TaskRecord = z.infer<typeof taskSchema>;
-export type CreateTaskInput = z.infer<typeof createTaskInputSchema>;
-export type UpdateTaskStatusInput = z.infer<typeof updateTaskStatusInputSchema>;
-export type StateRecord = z.infer<typeof stateRecordSchema>;
-export type UpsertStateInput = z.infer<typeof upsertStateInputSchema>;
-export type MessageRecord = z.infer<typeof messageSchema>;
-export type CreateMessageInput = z.infer<typeof createMessageInputSchema>;
-export type AcknowledgeMessageInput = z.infer<typeof acknowledgeMessageInputSchema>;
-export type PurchaseRecord = z.infer<typeof purchaseRecordSchema>;
-export type DatabaseShape = z.infer<typeof dbSchema>;
+  return records;
+}
+
+export type Agent = z.infer<typeof AgentSchema>;
+export type MemoryRecord = z.infer<typeof MemoryRecordSchema>;
+export type TaskRecord = z.infer<typeof TaskRecordSchema>;
+export type StateRecord = z.infer<typeof StateRecordSchema>;
+export type CommunicationRecord = z.infer<typeof CommunicationRecordSchema>;
+export type PurchaseRecord = z.infer<typeof PurchaseRecordSchema>;

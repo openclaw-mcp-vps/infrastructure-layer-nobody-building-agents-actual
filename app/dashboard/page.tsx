@@ -1,71 +1,116 @@
-import Link from "next/link";
-import { ShieldCheck, Lock } from "lucide-react";
-import { AgentList } from "@/components/dashboard/agent-list";
-import { MemoryViewer } from "@/components/dashboard/memory-viewer";
-import { TaskQueue } from "@/components/dashboard/task-queue";
-import { SdkDocs } from "@/components/dashboard/sdk-docs";
-import { AgentHandoff } from "@/components/dashboard/agent-handoff";
-import { hasPaidAccess } from "@/lib/auth";
-
-export const metadata = {
-  title: "AgentInfra Dashboard",
-  description:
-    "Monitor agent performance, inspect persistent memory, and orchestrate task queues from one production dashboard."
-};
+import { redirect } from "next/navigation";
+import { AgentMetrics } from "@/components/ui/agent-metrics";
+import { DashboardActions } from "@/components/ui/dashboard-actions";
+import { DashboardLayout } from "@/components/ui/dashboard-layout";
+import { getSessionFromCookie } from "@/lib/auth";
+import {
+  AgentSchema,
+  CommunicationRecordSchema,
+  MemoryRecordSchema,
+  parseCollection,
+  StateRecordSchema,
+  TaskRecordSchema
+} from "@/lib/db/schema";
+import { readJsonFile } from "@/lib/storage";
 
 export default async function DashboardPage() {
-  const paid = await hasPaidAccess();
+  const session = await getSessionFromCookie();
 
-  if (!paid) {
-    return (
-      <main className="container py-16">
-        <section className="panel mx-auto max-w-2xl p-8 text-center">
-          <Lock className="mx-auto h-10 w-10 text-emerald-300" />
-          <h1 className="mt-4 text-3xl font-semibold text-white">Paid access required</h1>
-          <p className="mt-3 text-gray-300">
-            The working infrastructure platform is behind the paid plan. Complete checkout on the
-            landing page and return here once the access cookie is issued.
-          </p>
-          <div className="mt-6 flex flex-wrap justify-center gap-3">
-            <Link href="/#pricing" className="btn-primary">
-              Unlock for $19/mo
-            </Link>
-            <Link href="/" className="btn-secondary">
-              Back to overview
-            </Link>
-          </div>
-        </section>
-      </main>
-    );
+  if (!session) {
+    redirect("/?unlock=required");
   }
 
-  return (
-    <main className="container py-8">
-      <header className="mb-6 flex flex-wrap items-center justify-between gap-4">
-        <div>
-          <p className="badge">
-            <ShieldCheck className="h-3.5 w-3.5" />
-            Paid environment unlocked
-          </p>
-          <h1 className="mt-3 text-3xl font-semibold text-white">AgentInfra Operations Dashboard</h1>
-          <p className="mt-1 text-sm text-gray-300">
-            Monitor reliability, queue execution, and memory health across your production agent fleet.
-          </p>
-        </div>
-        <Link href="/" className="btn-secondary text-sm">
-          View landing page
-        </Link>
-      </header>
+  const [agentsRaw, tasksRaw, memoryRaw, stateRaw, commRaw] = await Promise.all([
+    readJsonFile<unknown[]>("agents.json", []),
+    readJsonFile<unknown[]>("tasks.json", []),
+    readJsonFile<unknown[]>("memory.json", []),
+    readJsonFile<unknown[]>("state.json", []),
+    readJsonFile<unknown[]>("communication.json", [])
+  ]);
 
-      <div className="grid gap-5">
-        <AgentList />
-        <div className="grid gap-5 xl:grid-cols-2">
-          <MemoryViewer />
-          <TaskQueue />
+  const agents = parseCollection(agentsRaw, AgentSchema).filter(
+    (agent) => agent.ownerEmail === session.email
+  );
+
+  const tasks = parseCollection(tasksRaw, TaskRecordSchema).filter(
+    (task) => task.ownerEmail === session.email
+  );
+
+  const memory = parseCollection(memoryRaw, MemoryRecordSchema).filter(
+    (record) => record.ownerEmail === session.email
+  );
+
+  const state = parseCollection(stateRaw, StateRecordSchema).filter(
+    (record) => record.ownerEmail === session.email
+  );
+
+  const communication = parseCollection(commRaw, CommunicationRecordSchema).filter(
+    (record) => record.ownerEmail === session.email
+  );
+
+  return (
+    <DashboardLayout email={session.email}>
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="shell p-4">
+          <p className="text-xs text-slate-400">Registered Agents</p>
+          <p className="mt-1 text-2xl font-bold">{agents.length}</p>
         </div>
-        <AgentHandoff />
-        <SdkDocs />
+        <div className="shell p-4">
+          <p className="text-xs text-slate-400">Queued + Running Tasks</p>
+          <p className="mt-1 text-2xl font-bold">
+            {tasks.filter((task) => task.status === "queued" || task.status === "running").length}
+          </p>
+        </div>
+        <div className="shell p-4">
+          <p className="text-xs text-slate-400">Memory Entries</p>
+          <p className="mt-1 text-2xl font-bold">{memory.length}</p>
+        </div>
+        <div className="shell p-4">
+          <p className="text-xs text-slate-400">Cross-Agent Messages</p>
+          <p className="mt-1 text-2xl font-bold">{communication.length}</p>
+        </div>
       </div>
-    </main>
+
+      <AgentMetrics agents={agents} tasks={tasks} />
+
+      <section className="shell p-5">
+        <h2 className="text-lg font-semibold">Current State Snapshots</h2>
+        <p className="mt-1 text-sm text-slate-400">
+          State keys let agents resume exactly where they stopped without replaying whole workflows.
+        </p>
+        <div className="mt-3 overflow-x-auto">
+          <table className="min-w-full text-left text-sm">
+            <thead className="text-xs uppercase tracking-wide text-slate-400">
+              <tr>
+                <th className="py-2 pr-4">Agent</th>
+                <th className="py-2 pr-4">Key</th>
+                <th className="py-2 pr-4">Version</th>
+                <th className="py-2 pr-4">Updated</th>
+              </tr>
+            </thead>
+            <tbody>
+              {state.length === 0 ? (
+                <tr>
+                  <td colSpan={4} className="py-3 text-slate-400">
+                    No state stored yet. Use the actions panel below to persist agent checkpoints.
+                  </td>
+                </tr>
+              ) : (
+                state.slice(0, 8).map((entry) => (
+                  <tr key={entry.id} className="border-t border-[#30363d]">
+                    <td className="py-2 pr-4">{entry.agentId}</td>
+                    <td className="py-2 pr-4">{entry.key}</td>
+                    <td className="py-2 pr-4">{entry.version}</td>
+                    <td className="py-2 pr-4">{new Date(entry.updatedAt).toLocaleString()}</td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <DashboardActions agents={agents} />
+    </DashboardLayout>
   );
 }

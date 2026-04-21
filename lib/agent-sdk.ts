@@ -1,192 +1,121 @@
-import { z } from "zod";
+import {
+  AgentSchema,
+  CommunicationCreateSchema,
+  CommunicationRecordSchema,
+  MemoryRecordSchema,
+  MemoryWriteSchema,
+  StateRecordSchema,
+  StateUpsertSchema,
+  TaskCreateSchema,
+  TaskRecordSchema
+} from "@/lib/db/schema";
 
-const agentSchema = z.object({
-  id: z.string(),
-  name: z.string(),
-  role: z.string(),
-  status: z.string(),
-  requests24h: z.number(),
-  errorRate: z.number(),
-  avgLatencyMs: z.number(),
-  createdAt: z.string(),
-  updatedAt: z.string()
-});
+type SDKOptions = {
+  baseUrl?: string;
+};
 
-const memorySchema = z.object({
-  id: z.string(),
-  agentId: z.string(),
-  namespace: z.string(),
-  content: z.string(),
-  tags: z.array(z.string()),
-  createdAt: z.string()
-});
+async function parseResponse<T>(response: Response, parser: (value: unknown) => T): Promise<T> {
+  const payload = await response.json();
 
-const taskSchema = z.object({
-  id: z.string(),
-  agentId: z.string(),
-  title: z.string(),
-  payload: z.record(z.unknown()),
-  priority: z.enum(["low", "normal", "high"]),
-  status: z.enum(["queued", "running", "completed", "failed"]),
-  attempts: z.number(),
-  runAt: z.string(),
-  createdAt: z.string(),
-  updatedAt: z.string()
-});
-
-const messageSchema = z.object({
-  id: z.string(),
-  fromAgentId: z.string(),
-  toAgentId: z.string(),
-  topic: z.string(),
-  payload: z.record(z.unknown()),
-  status: z.enum(["sent", "acknowledged"]),
-  createdAt: z.string(),
-  acknowledgedAt: z.string().optional()
-});
-
-function buildUrl(baseUrl: string, path: string, params?: Record<string, string>) {
-  const url = new URL(path, baseUrl);
-
-  if (params) {
-    for (const [key, value] of Object.entries(params)) {
-      url.searchParams.set(key, value);
-    }
+  if (!response.ok) {
+    const message = typeof payload?.error === "string" ? payload.error : "Request failed";
+    throw new Error(message);
   }
 
-  return url.toString();
+  return parser(payload);
 }
 
-function withQuery(path: string, params: Record<string, string>) {
-  const query = new URLSearchParams(params);
-  const queryString = query.toString();
-  return queryString.length > 0 ? `${path}?${queryString}` : path;
-}
+export class AgentInfraSDK {
+  private readonly baseUrl: string;
 
-export class AgentInfrastructureSDK {
-  constructor(private readonly baseUrl: string, private readonly token?: string) {}
+  constructor(options: SDKOptions = {}) {
+    this.baseUrl = options.baseUrl ?? "";
+  }
 
-  private async request<T>(path: string, init?: RequestInit, schema?: z.ZodSchema<T>) {
-    const response = await fetch(buildUrl(this.baseUrl, path), {
-      ...init,
-      headers: {
-        "Content-Type": "application/json",
-        ...(this.token ? { Authorization: `Bearer ${this.token}` } : {}),
-        ...(init?.headers ?? {})
-      },
-      credentials: "include"
+  async listAgents() {
+    const response = await fetch(`${this.baseUrl}/api/agents`, { method: "GET", credentials: "include" });
+    return parseResponse(response, (value) => {
+      const list = (value as { agents: unknown[] }).agents;
+      return list.map((item) => AgentSchema.parse(item));
+    });
+  }
+
+  async createAgent(input: { name: string; description: string; model: string }) {
+    const body = { ...input };
+    const response = await fetch(`${this.baseUrl}/api/agents`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify(body)
     });
 
-    if (!response.ok) {
-      throw new Error(`AgentInfra API request failed with status ${response.status}`);
-    }
-
-    const payload = await response.json();
-    if (!schema) {
-      return payload;
-    }
-
-    return schema.parse(payload);
+    return parseResponse(response, (value) => AgentSchema.parse((value as { agent: unknown }).agent));
   }
 
-  listAgents() {
-    return this.request("/api/agents", undefined, z.array(agentSchema));
-  }
-
-  createAgent(input: { name: string; role: string }) {
-    return this.request(
-      "/api/agents",
-      {
-        method: "POST",
-        body: JSON.stringify(input)
-      },
-      agentSchema
-    );
-  }
-
-  listMemory(params?: { agentId?: string; query?: string }) {
-    const qp: Record<string, string> = {};
-    if (params?.agentId) {
-      qp.agentId = params.agentId;
-    }
-    if (params?.query) {
-      qp.query = params.query;
-    }
-
-    return this.request(withQuery("/api/memory", qp), undefined, z.array(memorySchema));
-  }
-
-  createMemory(input: { agentId: string; namespace: string; content: string; tags?: string[] }) {
-    return this.request(
-      "/api/memory",
-      {
-        method: "POST",
-        body: JSON.stringify(input)
-      },
-      memorySchema
-    );
-  }
-
-  listTasks(params?: { agentId?: string; status?: "queued" | "running" | "completed" | "failed" }) {
-    const qp: Record<string, string> = {};
-    if (params?.agentId) {
-      qp.agentId = params.agentId;
-    }
-    if (params?.status) {
-      qp.status = params.status;
-    }
-
-    return this.request(withQuery("/api/tasks", qp), undefined, z.array(taskSchema));
-  }
-
-  createTask(input: {
+  async writeMemory(input: {
     agentId: string;
-    title: string;
-    payload?: Record<string, unknown>;
-    priority?: "low" | "normal" | "high";
+    namespace?: string;
+    key: string;
+    value: unknown;
+    metadata?: Record<string, unknown>;
   }) {
-    return this.request(
-      "/api/tasks",
-      {
-        method: "POST",
-        body: JSON.stringify(input)
-      },
-      taskSchema
-    );
+    const body = MemoryWriteSchema.parse(input);
+    const response = await fetch(`${this.baseUrl}/api/memory`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify(body)
+    });
+
+    return parseResponse(response, (value) => MemoryRecordSchema.parse((value as { memory: unknown }).memory));
   }
 
-  setState(input: { agentId: string; key: string; value: Record<string, unknown> }) {
-    return this.request(
-      "/api/state",
-      {
-        method: "POST",
-        body: JSON.stringify(input)
-      }
-    );
+  async queueTask(input: {
+    agentId: string;
+    type: string;
+    payload: Record<string, unknown>;
+    priority?: number;
+    maxAttempts?: number;
+  }) {
+    const body = TaskCreateSchema.parse(input);
+    const response = await fetch(`${this.baseUrl}/api/tasks`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify(body)
+    });
+
+    return parseResponse(response, (value) => TaskRecordSchema.parse((value as { task: unknown }).task));
   }
 
-  listMessages(params?: { agentId?: string }) {
-    const qp: Record<string, string> = {};
-    if (params?.agentId) {
-      qp.agentId = params.agentId;
-    }
+  async upsertState(input: { agentId: string; key: string; value: unknown }) {
+    const body = StateUpsertSchema.parse(input);
+    const response = await fetch(`${this.baseUrl}/api/state`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify(body)
+    });
 
-    return this.request(withQuery("/api/messages", qp), undefined, z.array(messageSchema));
+    return parseResponse(response, (value) => StateRecordSchema.parse((value as { state: unknown }).state));
   }
 
-  sendMessage(input: {
+  async sendMessage(input: {
     fromAgentId: string;
     toAgentId: string;
-    topic: string;
-    payload?: Record<string, unknown>;
+    channel?: string;
+    message: string;
   }) {
-    return this.request(
-      "/api/messages",
-      {
-        method: "POST",
-        body: JSON.stringify(input)
-      },
-      messageSchema
+    const body = CommunicationCreateSchema.parse(input);
+    const response = await fetch(`${this.baseUrl}/api/communication`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify(body)
+    });
+
+    return parseResponse(response, (value) =>
+      CommunicationRecordSchema.parse((value as { communication: unknown }).communication)
     );
   }
 }

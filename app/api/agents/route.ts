@@ -1,34 +1,57 @@
-import { NextRequest, NextResponse } from "next/server";
-import { createAgent, listAgents } from "@/lib/data-store";
-import { createAgentInputSchema } from "@/lib/db/schema";
-import { requestHasPaidAccess, unauthorizedPaywallResponse } from "@/lib/auth";
+import { NextResponse } from "next/server";
+import { AgentCreateSchema, AgentSchema, parseCollection } from "@/lib/db/schema";
+import { requirePaidAccess } from "@/lib/auth";
+import { readJsonFile, writeJsonFile } from "@/lib/storage";
 
-export const runtime = "nodejs";
+const AGENTS_FILE = "agents.json";
 
-export async function GET(request: NextRequest) {
-  if (!requestHasPaidAccess(request)) {
-    return unauthorizedPaywallResponse();
+export async function GET() {
+  const auth = await requirePaidAccess();
+  if (!auth.ok) {
+    return auth.response;
   }
 
-  const agents = await listAgents();
-  return NextResponse.json(agents);
+  const raw = await readJsonFile<unknown[]>(AGENTS_FILE, []);
+  const agents = parseCollection(raw, AgentSchema)
+    .filter((agent) => agent.ownerEmail === auth.email)
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+
+  return NextResponse.json({ agents });
 }
 
-export async function POST(request: NextRequest) {
-  if (!requestHasPaidAccess(request)) {
-    return unauthorizedPaywallResponse();
+export async function POST(req: Request) {
+  const auth = await requirePaidAccess();
+  if (!auth.ok) {
+    return auth.response;
   }
 
-  const json = await request.json();
-  const parsed = createAgentInputSchema.safeParse(json);
+  const body = await req.json();
+  const parsed = AgentCreateSchema.safeParse(body);
 
   if (!parsed.success) {
-    return NextResponse.json(
-      { error: "invalid_request", details: parsed.error.flatten() },
-      { status: 400 }
-    );
+    return NextResponse.json({ error: "Invalid agent payload." }, { status: 400 });
   }
 
-  const agent = await createAgent(parsed.data);
-  return NextResponse.json(agent, { status: 201 });
+  const now = new Date().toISOString();
+  const raw = await readJsonFile<unknown[]>(AGENTS_FILE, []);
+  const currentAgents = parseCollection(raw, AgentSchema);
+
+  const agent = AgentSchema.parse({
+    id: crypto.randomUUID(),
+    ownerEmail: auth.email,
+    name: parsed.data.name,
+    description: parsed.data.description,
+    model: parsed.data.model,
+    status: "active",
+    messageCount: 0,
+    successRate: 1,
+    createdAt: now,
+    updatedAt: now,
+    lastSeenAt: now
+  });
+
+  const next = [agent, ...currentAgents];
+  await writeJsonFile(AGENTS_FILE, next);
+
+  return NextResponse.json({ agent }, { status: 201 });
 }
